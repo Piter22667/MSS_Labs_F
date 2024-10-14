@@ -1,93 +1,130 @@
 package org.example;
 
+import ij.IJ;
+import ij.ImagePlus;
+import ij.process.ImageProcessor;
 import org.apache.commons.math3.linear.*;
+
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
-//import org.jfree.chart.ChartFactory;
-////import org.jfree.chart.ChartUtils;
-//import org.jfree.chart.JFreeChart;
-//import org.jfree.data.xy.XYSeries;
-//import org.jfree.data.xy.XYSeriesCollection;
 
 public class Main {
-    public static void main(String[] args) {
-        try {
+    public static void main(String[] args) throws IOException {
+        // Read images
+        ImagePlus xImage = IJ.openImage("x3.bmp");
+        ImagePlus yImage = IJ.openImage("y8.bmp");
 
-            // Зчитування файлів
-            double[][] X = readImageToMatrix("x1.bmp");
-            double[][] Y = readImageToMatrix("y8.bmp");
+        // Convert images to matrices
+        RealMatrix X = imageToMatrix(xImage);
+        RealMatrix Y = imageToMatrix(yImage);
 
-            System.out.println("Розмірність X: " + X.length + "x" + X[0].length);
-            System.out.println("Розмірність Y: " + Y.length + "x" + Y[0].length);
+        System.out.println("X dimensions: " + X.getRowDimension() + "x" + X.getColumnDimension());
+        System.out.println("Y dimensions: " + Y.getRowDimension() + "x" + Y.getColumnDimension());
 
-            X = addOnesRow(X);
-            RealMatrix matrixX = MatrixUtils.createRealMatrix(X);
-            RealMatrix matrixY = MatrixUtils.createRealMatrix(Y);
+        // Add row of ones to X
+        X = addRowOfOnes(X);
 
-            long startTime = System.nanoTime();
-            Runtime runtime = Runtime.getRuntime();
-            long usedMemoryBefore = runtime.totalMemory() - runtime.freeMemory();
+        System.out.println("X dimensions after adding row of ones: " + X.getRowDimension() + "x" + X.getColumnDimension());
 
-            RealMatrix pseudoInverse = findPseudoInverse(matrixX);
-            System.out.println("Розмірність псевдооберненої матриці X+: " +
-                    pseudoInverse.getRowDimension() + "x" +
-                    pseudoInverse.getColumnDimension());
+        // Calculate pseudoinverse using Greville formula
+        RealMatrix XPseudoInverse = calculateGrevillePseudoinverse(X);
 
-            long endTime = System.nanoTime();
-            long usedMemoryAfter = runtime.totalMemory() - runtime.freeMemory();
+        System.out.println("XPseudoInverse dimensions: " + XPseudoInverse.getRowDimension() + "x" + XPseudoInverse.getColumnDimension());
 
-            long duration = (endTime - startTime) / 1_000_000;
-            long memoryUsed = usedMemoryAfter - usedMemoryBefore;
+        // Calculate transformation matrix A
+        RealMatrix Z = MatrixUtils.createRealIdentityMatrix(X.getRowDimension()).subtract(X.multiply(XPseudoInverse));
+        RealMatrix V = MatrixUtils.createRealMatrix(Y.getRowDimension(), X.getRowDimension());
+        RealMatrix A = Y.multiply(XPseudoInverse).add(V.multiply(Z));
 
-            System.out.println("\nЗагальний час виконання: " + duration + " мс");
-            System.out.println("Загальне використання пам'яті: " + memoryUsed / 1024 + " КБ\n");
+        System.out.println("A dimensions: " + A.getRowDimension() + "x" + A.getColumnDimension());
 
+        // Apply transformation
+        RealMatrix YTransformed = A.multiply(X);
 
+        System.out.println("YTransformed dimensions: " + YTransformed.getRowDimension() + "x" + YTransformed.getColumnDimension());
 
+        // Project values to [0, 255] range
+        RealMatrix YProjected = projectTo255Range(YTransformed);
 
+        // Save the result
+        saveMatrixAsImage(YProjected, "resultTransformed.bmp");
 
-            // Перевірка характеристичної властивості псевдооберненої матриці
-            RealMatrix X_plus_X_X_plus = pseudoInverse.subtract(pseudoInverse.multiply(matrixX).multiply(pseudoInverse));
-            double mse1 = calculateMSE(X_plus_X_X_plus);
-            System.out.println("Середньоквадратичне відхилення (X+)X(X+): " + mse1);
-
-            RealMatrix X_X_plus_X = matrixX.subtract(matrixX.multiply(pseudoInverse).multiply(matrixX));
-            double mse2 = calculateMSE(X_X_plus_X);
-            System.out.println("Середньоквадратичне відхилення X(X+)X від X: " + mse2);
-
-
-            // Перевірка властивостей псевдооберненої матриці
-            checkPseudoInverseProperties(matrixX, pseudoInverse);
-
-            // Шукаємо оператор А перетворення X в Y
-            int m = matrixX.getRowDimension();
-            int p = matrixY.getRowDimension();
-            RealMatrix Z = MatrixUtils.createRealIdentityMatrix(m).subtract(matrixX.multiply(pseudoInverse));
-            RealMatrix V = MatrixUtils.createRealMatrix(p, m);
-            RealMatrix A_MP = matrixY.multiply(pseudoInverse).add(V.multiply(Z));
-
-            // Застосовуємо оператор A до X
-            RealMatrix Yimage_MP = A_MP.multiply(matrixX);
-
-            // Проекція елементів матриці на проміжок [0; 255]
-            RealMatrix Yimage_projected_MP = projectTo0_255(Yimage_MP);
-
-            // Зберігаємо результат як зображення
-            saveMatrixAsImage(Yimage_projected_MP, "Result_image.bmp");
-
-            // Середньоквадратична похибка знаходження образу
-            double mse = calculateMSE(matrixY.subtract(Yimage_projected_MP));
-            System.out.println("Середньоквадратична похибка знаходження образу: " + mse);
-
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+        // Calculate and print mean squared error
+        double mse = calculateMeanSquaredError(Y, YProjected);
+        System.out.println("Mean Squared Error: " + mse);
     }
 
+    private static RealMatrix imageToMatrix(ImagePlus image) {
+        ImageProcessor ip = image.getProcessor();
+        int width = ip.getWidth();
+        int height = ip.getHeight();
+        double[][] data = new double[height][width];
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                data[y][x] = ip.getPixelValue(x, y);
+            }
+        }
+        return MatrixUtils.createRealMatrix(data);
+    }
 
-    private static double findMinValue(RealMatrix matrix) {
+    private static RealMatrix addRowOfOnes(RealMatrix matrix) {
+        int rows = matrix.getRowDimension();
+        int cols = matrix.getColumnDimension();
+        double[][] newData = new double[rows + 1][cols];
+        for (int i = 0; i < rows; i++) {
+            System.arraycopy(matrix.getRow(i), 0, newData[i], 0, cols);
+        }
+        for (int j = 0; j < cols; j++) {
+            newData[rows][j] = 1.0;
+        }
+        return MatrixUtils.createRealMatrix(newData);
+    }
+
+    private static RealMatrix calculateGrevillePseudoinverse(RealMatrix X) {
+        int m = X.getRowDimension();
+        int n = X.getColumnDimension();
+        RealMatrix psinv = MatrixUtils.createRealMatrix(n, m);
+        double epsilon = 0.0001;
+
+        for (int i = 0; i < m; i++) {
+            RealVector xi = X.getRowVector(i);
+
+            if (i == 0) {
+                double dotpr = xi.dotProduct(xi);
+                if (Math.abs(dotpr) < epsilon) {
+                    psinv.setColumnVector(i, new ArrayRealVector(n));
+                } else {
+                    psinv.setColumnVector(i, xi.mapDivide(dotpr));
+                }
+            } else {
+                RealMatrix XCur = X.getSubMatrix(0, i-1, 0, n-1);
+                RealMatrix Z = MatrixUtils.createRealIdentityMatrix(n).subtract(psinv.getSubMatrix(0, n-1, 0, i-1).multiply(XCur));
+                double denom = xi.dotProduct(Z.operate(xi));
+                RealVector numer;
+                if (Math.abs(denom) < epsilon) {
+                    RealMatrix R = psinv.getSubMatrix(0, n-1, 0, i-1).multiply(psinv.getSubMatrix(0, n-1, 0, i-1).transpose());
+                    numer = R.operate(xi);
+                    denom = 1 + xi.dotProduct(R.operate(xi));
+                } else {
+                    numer = Z.operate(xi);
+                }
+                RealMatrix psinvUpdate = numer.outerProduct(xi).multiply(psinv.getSubMatrix(0, n-1, 0, i-1)).scalarMultiply(1/denom);
+                psinv.setSubMatrix(psinv.getSubMatrix(0, n-1, 0, i-1).subtract(psinvUpdate).getData(), 0, 0);
+                psinv.setColumnVector(i, numer.mapDivide(denom));
+            }
+        }
+        return psinv;
+    }
+
+    private static RealMatrix projectTo255Range(RealMatrix matrix) {
+        double min = getMinValue(matrix);
+        double max = getMaxValue(matrix);
+        return matrix.scalarAdd(-min).scalarMultiply(255 / (max - min));
+    }
+
+    private static double getMinValue(RealMatrix matrix) {
         double min = Double.MAX_VALUE;
         for (int i = 0; i < matrix.getRowDimension(); i++) {
             for (int j = 0; j < matrix.getColumnDimension(); j++) {
@@ -97,7 +134,7 @@ public class Main {
         return min;
     }
 
-    private static double findMaxValue(RealMatrix matrix) {
+    private static double getMaxValue(RealMatrix matrix) {
         double max = Double.MIN_VALUE;
         for (int i = 0; i < matrix.getRowDimension(); i++) {
             for (int j = 0; j < matrix.getColumnDimension(); j++) {
@@ -107,193 +144,37 @@ public class Main {
         return max;
     }
 
-
-    private static RealMatrix findPseudoInverse(RealMatrix X) {
-        long startTime = System.nanoTime();
-        Runtime runtime = Runtime.getRuntime();
-        long usedMemoryBefore = runtime.totalMemory() - runtime.freeMemory();
-
-        double epsilon = 1e-10;
-        double delta = 10.0;
-        int m = X.getRowDimension();
-        int n = X.getColumnDimension();
-
-        RealMatrix XT = X.transpose();
-        RealMatrix XXT = X.multiply(XT);
-        RealMatrix I = MatrixUtils.createRealIdentityMatrix(m);
-
-        RealMatrix pseudoInv_prev = XT.multiply(new QRDecomposition(XXT.add(I.scalarMultiply(delta))).getSolver().getInverse());
-
-        int maxIterations = 100;
-        System.out.println("\nІтерації методу Мура-Пенроуза:");
-        for (int i = 0; i < maxIterations; i++) {
-            delta /= 2;
-            try {
-                RealMatrix pseudoInv_cur = XT.multiply(new QRDecomposition(XXT.add(I.scalarMultiply(delta))).getSolver().getInverse());
-
-                double diff = calculateNorm(pseudoInv_cur.subtract(pseudoInv_prev));
-                System.out.printf("Ітерація %d: delta = %.10f, різниця = %.10f%n", i+1, delta, diff);
-
-                if (diff < epsilon || delta < 1e-15) {
-                    System.out.println("Збіжність досягнута після " + (i+1) + " ітерацій");
-                    System.out.printf("Оптимальне значення delta: %.10f%n", delta);
-                    return pseudoInv_cur;
-                }
-                pseudoInv_prev = pseudoInv_cur;
-            } catch (SingularMatrixException e) {
-                System.out.println("Зустрінута сингулярна матриця на ітерації " + i + ". Повертаємо попередній результат.");
-                System.out.printf("Оптимальне значення delta: %.10f%n", delta * 2);  // Повертаємо попереднє значення delta
-                return pseudoInv_prev;
-            }
-        }
-
-        System.out.println("Попередження: Досягнуто максимальну кількість ітерацій у findPseudoInverse");
-        System.out.printf("Оптимальне значення delta: %.10f%n", delta);
-
-        long usedMemoryAfter = runtime.totalMemory() - runtime.freeMemory();
-        long memoryUsed = usedMemoryAfter - usedMemoryBefore;
-        long endTime = System.nanoTime();
-        long duration = (endTime - startTime) / 1_000_000;
-
-        return pseudoInv_prev;
-    }
-
-
-
-
-    private static void checkPseudoInverseProperties(RealMatrix A, RealMatrix A_plus) {
-        double epsilon = 1e-6; // Допустима відносна похибка
-
-        System.out.println("\n\nВластивості псевдооберненої матриці: ");
-        RealMatrix AA_plus_A = A.multiply(A_plus).multiply(A);
-        double relError1 = calculateRelativeError(AA_plus_A, A);
-//        System.out.println("Відносна похибка (AA+A - A)/A: " + relError1);
-        System.out.println("Властивість AA+A = A: " + (relError1 < epsilon));
-
-        // Властивість 2: A+AA+ = A+
-        RealMatrix A_plus_A_A_plus = A_plus.multiply(A).multiply(A_plus);
-        double relError2 = calculateRelativeError(A_plus_A_A_plus, A_plus);
-//        System.out.println("Відносна похибка (A+AA+ - A+)/A+: " + relError2);
-        System.out.println("Властивість A+AA+ = A+: " + (relError2 < epsilon));
-
-        // Властивість 3: AA+ - симетрична матриця
-        RealMatrix AA_plus = A.multiply(A_plus);
-        double relError3 = calculateRelativeError(AA_plus, AA_plus.transpose());
-//        System.out.println("Відносна похибка (AA+ - (AA+)^T)/AA+: " + relError3);
-        System.out.println("Властивість AA+ - симетрична: " + (relError3 < epsilon));
-
-        // Властивість 4: A+A - симетрична матриця
-        RealMatrix A_plus_A = A_plus.multiply(A);
-        double relError4 = calculateRelativeError(A_plus_A, A_plus_A.transpose());
-//        System.out.println("Відносна похибка (A+A - (A+A)^T)/A+A: " + relError4);
-        System.out.println("Властивість A+A - симетрична: " + (relError4 < epsilon) + "\n");
-    }
-
-    private static double calculateRelativeError(RealMatrix A, RealMatrix B) {
-        return calculateNorm(A.subtract(B)) / calculateNorm(B);
-    }
-
-
-    private static double calculateNorm(RealMatrix matrix) {
-        double maxRowSum = 0;
-        for (int i = 0; i < matrix.getRowDimension(); i++) {
-            double rowSum = 0;
-            for (int j = 0; j < matrix.getColumnDimension(); j++) {
-                rowSum += Math.abs(matrix.getEntry(i, j));
-            }
-            maxRowSum = Math.max(maxRowSum, rowSum);
-        }
-        return maxRowSum;
-    }
-
-    private static double calculateMSE(RealMatrix matrix) {
-        double sum = 0;
-        int elements = matrix.getRowDimension() * matrix.getColumnDimension();
-        for (int i = 0; i < matrix.getRowDimension(); i++) {
-            for (int j = 0; j < matrix.getColumnDimension(); j++) {
-                sum += Math.pow(matrix.getEntry(i, j), 2);
-            }
-        }
-        return sum / elements;
-    }
-
-    private static RealMatrix projectTo0_255(RealMatrix matrix) {
-        double min = findMinValue(matrix);
-        double max = findMaxValue(matrix);
-        return matrix.scalarAdd(-min).scalarMultiply(255 / (max - min));
-    }
-
     private static void saveMatrixAsImage(RealMatrix matrix, String filename) throws IOException {
-
-
-        int width = matrix.getColumnDimension();
         int height = matrix.getRowDimension();
+        int width = matrix.getColumnDimension();
         BufferedImage image = new BufferedImage(width, height, BufferedImage.TYPE_BYTE_GRAY);
-
         for (int y = 0; y < height; y++) {
             for (int x = 0; x < width; x++) {
-                int gray = (int) Math.round(matrix.getEntry(y, x));
-                gray = Math.max(0, Math.min(255, gray));
-                int rgb = (gray << 16) | (gray << 8) | gray;
+                int value = (int) Math.round(matrix.getEntry(y, x));
+                int rgb = (value << 16) | (value << 8) | value;
                 image.setRGB(x, y, rgb);
             }
         }
-        System.out.println("Збереження зображення: " + filename);
-
-        ImageIO.write(image, "bmp", new File("Result_image.bmp"));
+        ImageIO.write(image, "PNG", new File(filename));
     }
 
-    private static double[][] addOnesRow(double[][] matrix) {
-        int rows = matrix.length;
-        int cols = matrix[0].length;
-        double[][] newMatrix = new double[rows + 1][cols];
-
-        for (int i = 0; i < rows; i++) {
-            System.arraycopy(matrix[i], 0, newMatrix[i], 0, cols);
-        }
-        for (int j = 0; j < cols; j++) {
-            newMatrix[rows][j] = 1.0;
+    private static double calculateMeanSquaredError(RealMatrix original, RealMatrix projected) {
+        if (original.getRowDimension() != projected.getRowDimension() ||
+                original.getColumnDimension() != projected.getColumnDimension()) {
+            throw new IllegalArgumentException("Matrices must have the same dimensions");
         }
 
-        return newMatrix;
-    }
+        double sumSquaredDiff = 0;
+        int totalElements = original.getRowDimension() * original.getColumnDimension();
 
-    private static double[][] readImageToMatrix(String filename) throws IOException {
-        BufferedImage image = ImageIO.read(new File(filename));
-        int width = image.getWidth();
-        int height = image.getHeight();
-        double[][] matrix = new double[height][width];
-
-        for (int y = 0; y < height; y++) {
-            for (int x = 0; x < width; x++) {
-                int rgb = image.getRGB(x, y);
-                int gray = (rgb >> 16) & 0xFF; // Припускаємо, що зображення вже в відтінках сірого
-                matrix[y][x] = gray;
+        for (int i = 0; i < original.getRowDimension(); i++) {
+            for (int j = 0; j < original.getColumnDimension(); j++) {
+                double diff = original.getEntry(i, j) - projected.getEntry(i, j);
+                sumSquaredDiff += diff * diff;
             }
         }
 
-        return matrix;
+        return sumSquaredDiff / totalElements;
     }
-
-
-    private static double[][] normalizeMatrix(double[][] matrix) {
-        double min = Double.MAX_VALUE;
-        double max = Double.MIN_VALUE;
-        for (double[] row : matrix) {
-            for (double value : row) {
-                min = Math.min(min, value);
-                max = Math.max(max, value);
-            }
-        }
-        double range = max - min;
-        double[][] normalized = new double[matrix.length][matrix[0].length];
-        for (int i = 0; i < matrix.length; i++) {
-            for (int j = 0; j < matrix[i].length; j++) {
-                normalized[i][j] = (matrix[i][j] - min) / range;
-            }
-        }
-        return normalized;
-    }
-
 
 }
